@@ -9,7 +9,7 @@
 </head>
 <body>
 <main>
-<header><small>ASISTENTE PERSONAL</small><h1>Mis pendientes 🎙️</h1><p>Habla normalmente. La aplicación separará tus tareas y las enviará al terminar.</p></header>
+<header><small>ASISTENTE PERSONAL · VERSIÓN 3.2</small><h1>Mis pendientes 🎙️</h1><p>Habla normalmente. La aplicación separará tus tareas y las enviará al terminar.</p></header>
 <section class="panel">
 <button id="mic" aria-label="Empezar o terminar dictado">🎙</button>
 <div id="status">Toca el micrófono para empezar</div>
@@ -33,28 +33,37 @@
 'use strict';
 const $ = x => document.getElementById(x);
 const KEY='mi-asistente-backend-v3';
-let savedEndpoint = '';
-try { savedEndpoint = localStorage.getItem(KEY) || ''; } catch (error) { /* Almacenamiento no disponible */ }
-$('endpoint').value = savedEndpoint;
+// Una única fuente de verdad, independiente de si Chrome permite localStorage.
+let activeEndpoint = '';
+let storedEndpoint = '';
+try { storedEndpoint = localStorage.getItem(KEY) || ''; } catch (error) { /* Safari/Chrome privado */ }
 function normalizeEndpoint(input) {
-  let value = String(input || '').trim().replace(/^[\s\"'`]+|[\s\"'`]+$/g,'');
-  if (!value) return {ok:false, reason:'empty'};
-  let url;
-  try { url = new URL(value); } catch (error) { return {ok:false,reason:'format'}; }
-  const personal = /^\/macros\/s\/[^/]+\/exec\/?$/;
-  const workspace = /^\/a\/macros\/[^/]+\/s\/[^/]+\/exec\/?$/;
-  if (url.protocol !== 'https:' || url.hostname !== 'script.google.com' ||
-      url.username || url.password || !(personal.test(url.pathname) || workspace.test(url.pathname))) {
-    return {ok:false,reason:'format'};
-  }
-  return {ok:true, value:url.origin + url.pathname.replace(/\/$/,'')};
+  const raw=String(input||'').trim().replace(/^[\s\"'`]+|[\s\"'`]+$/g,'');
+  if(!raw)return {ok:false,reason:'empty'};
+  let u;
+  try {u=new URL(raw);}catch(e){return {ok:false,reason:'invalid-url'};}
+  // Se aceptan despliegues personales y de Workspace: /macros/s/ID/exec y /a/macros/dominio/s/ID/exec.
+  const path=u.pathname.replace(/\/+$/,'');
+  const validPath=/^\/macros\/s\/[^/]+\/exec$/i.test(path) ||
+    /^\/a\/macros\/[^/]+\/s\/[^/]+\/exec$/i.test(path);
+  if(u.protocol!=='https:'||u.hostname!=='script.google.com'||u.username||u.password||!validPath)
+    return {ok:false,reason:'invalid-format'};
+  return {ok:true,value:u.origin+path};
 }
+function setActiveEndpoint(value){
+  const parsed=normalizeEndpoint(value);
+  if(parsed.ok){activeEndpoint=parsed.value;$('endpoint').value=parsed.value;}
+  return parsed;
+}
+setActiveEndpoint(storedEndpoint);
 function connectionStatus() {
-  const result = normalizeEndpoint($('endpoint').value);
-  const p = $('connectionInfo');
-  p.textContent = result.ok ? 'URL válida y lista para usar. Aún no se ha probado el envío.' :
-    result.reason === 'empty' ? 'Falta pegar la URL /exec.' : 'La URL no tiene el formato esperado. Copia la URL de Aplicación web, no la del editor.';
-  return result;
+  const input=normalizeEndpoint($('endpoint').value);
+  const previous=normalizeEndpoint(activeEndpoint);
+  const p=$('connectionInfo');
+  if(input.ok){p.textContent='Dirección válida. Presiona Guardar conexión para utilizarla.';}
+  else if(previous.ok){p.textContent='Conexión activa guardada en esta sesión. Puedes seguir dictando.';}
+  else {p.textContent=input.reason==='empty'?'Pega la dirección completa terminada en /exec.':'La dirección no es una URL de implementación válida. Verifica que termine en /exec.';}
+  return input;
 }
 $('endpoint').addEventListener('input',connectionStatus);
 connectionStatus();
@@ -96,14 +105,14 @@ function showStatus(t){$('status').textContent=t;}
 function preview(tasks){$('previewArea').classList.remove('hidden');$('preview').replaceChildren();for(const x of tasks){const li=document.createElement('li');li.textContent=x.title+(x.date?' · '+x.date:' · sin fecha');$('preview').append(li);}}
 function send(text){
   if(sent)return;
-  const config = connectionStatus();
-  if (!config.ok) {
+  // No volver a leer el cuadro editable: usar la conexión que fue validada al guardar.
+  const config=normalizeEndpoint(activeEndpoint);
+  if(!config.ok){
     $('configPanel').classList.remove('hidden');
-    showStatus(config.reason === 'empty' ? 'Falta configurar la URL de Apps Script.' :
-      'La URL guardada no tiene un formato válido. Revísala en Configurar.');
+    showStatus('No hay una conexión activa. Pega la URL que termina en /exec y toca Guardar conexión.');
     return;
   }
-  const endpoint = config.value;
+  const endpoint=config.value;
   const tasks=parseTasks(text);
   if(!tasks.length){showStatus('No se detectaron tareas. Intenta otra vez.');return;}
   preview(tasks);
@@ -132,20 +141,25 @@ $('mic').addEventListener('click',()=>{if(listening){showStatus('Procesando dict
 $('manual').addEventListener('click',()=>{sent=false;send($('transcript').value.trim());});
 $('settings').addEventListener('click',()=>$('configPanel').classList.toggle('hidden'));
 $('saveConfig').addEventListener('click',()=>{
-  const config = connectionStatus();
-  if (!config.ok) {
-    showStatus('No se guardó: revisa la URL de la implementación /exec.');
+  const config=normalizeEndpoint($('endpoint').value);
+  if(!config.ok){
+    $('configPanel').classList.remove('hidden');
+    showStatus('URL incorrecta: copia la dirección de la aplicación web que termina en /exec.');
+    connectionStatus();
     return;
   }
-  $('endpoint').value = config.value;
-  try {
-    localStorage.setItem(KEY, config.value);
-    showStatus('URL válida y guardada. Ahora puedes dictar.');
-  } catch (error) {
-    showStatus('URL válida para esta pestaña. Chrome no permitió conservarla al cerrar.');
-  }
+  // Guardar primero en la variable activa, incluso si Chrome bloquea localStorage.
+  setActiveEndpoint(config.value);
+  let persisted=false;
+  try {localStorage.setItem(KEY,activeEndpoint);persisted=localStorage.getItem(KEY)===activeEndpoint;}catch(e){}
+  const check=normalizeEndpoint(activeEndpoint);
+  if(!check.ok){showStatus('No se pudo activar la URL. Vuelve a copiarla.');return;}
+  showStatus(persisted?'Conexión activa (versión 3.2). Ya puedes dictar.':'Conexión activa en esta pestaña (versión 3.2).');
   $('configPanel').classList.add('hidden');
 });
-if (!normalizeEndpoint($('endpoint').value).ok) $('configPanel').classList.remove('hidden');
+if (!normalizeEndpoint(activeEndpoint).ok) $('configPanel').classList.remove('hidden');
+</script>
+</body></html>
+
 </script>
 </body></html>
