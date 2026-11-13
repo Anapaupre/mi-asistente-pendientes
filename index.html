@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<title>Mis pendientes por voz</title>
+<style>
+:root{color-scheme:light;--navy:#122640;--blue:#2165c6;--muted:#67758c;--bg:#f4f7fc}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--navy);font-family:system-ui,-apple-system,Arial,sans-serif}main{max-width:550px;margin:auto;padding:28px 18px 52px}header{margin:12px 0 28px}small{color:var(--muted)}h1{font-size:29px;letter-spacing:-.8px;margin:4px 0}p{line-height:1.55}.panel{background:#fff;border-radius:22px;padding:22px;box-shadow:0 8px 35px #1334570c}#mic{display:flex;align-items:center;justify-content:center;margin:14px auto 18px;border:0;border-radius:50%;background:var(--blue);color:white;font-size:43px;width:108px;height:108px;box-shadow:0 8px 20px #2165c644;cursor:pointer}#mic.recording{background:#c53551;animation:pulse 1.2s infinite}@keyframes pulse{50%{box-shadow:0 0 0 15px #c5355125}}#status{text-align:center;font-weight:600;min-height:28px}textarea{width:100%;min-height:120px;border:1px solid #d9e0e9;border-radius:13px;font:16px system-ui;padding:13px;resize:vertical}label{display:block;font-weight:700;font-size:13px;margin:18px 0 7px}.hint{font-size:13px;color:var(--muted)}.notice{margin-top:15px;border-radius:10px;background:#eef4ff;padding:12px;font-size:13px}.actions{display:flex;gap:10px;align-items:center}button.secondary{border:1px solid #cdd7e3;background:#fff;padding:11px 14px;border-radius:11px;color:var(--navy);font-weight:600}#preview{padding-left:21px}#preview li{margin:9px 0}.hidden{display:none}input{width:100%;border:1px solid #d9e0e9;border-radius:11px;padding:12px;font-size:15px}#send{display:none}
+</style>
+</head>
+<body>
+<main>
+<header><small>ASISTENTE PERSONAL</small><h1>Mis pendientes 🎙️</h1><p>Habla normalmente. La aplicación separará tus tareas y las enviará al terminar.</p></header>
+<section class="panel">
+<button id="mic" aria-label="Empezar o terminar dictado">🎙</button>
+<div id="status">Toca el micrófono para empezar</div>
+<label for="transcript">Texto reconocido</label>
+<textarea id="transcript" placeholder="También puedes dictar con Gboard o escribir aquí."></textarea>
+<p class="hint">Ejemplo: Mañana revisar la entrega de Fecasa, el lunes confirmar el TPV de SAPAS y el martes solicitar avances de OOMAPAS.</p>
+<div id="previewArea" class="hidden"><label>Tareas detectadas</label><ol id="preview"></ol></div>
+<div class="actions"><button class="secondary" id="manual" type="button">Procesar texto escrito</button><button class="secondary" id="settings" type="button">Configurar</button></div>
+<p class="notice">El envío es automático después del dictado. Si el navegador bloquea el micrófono, utiliza el micrófono de Gboard y luego «Procesar texto escrito».</p>
+</section>
+<section id="configPanel" class="panel hidden" style="margin-top:16px">
+<h2 style="font-size:19px">Conexión</h2>
+<label for="endpoint">URL de implementación de Apps Script (/exec)</label>
+<input id="endpoint" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off"/>
+<p class="hint">Se guarda solo en este navegador. La URL no es una contraseña. Apps Script debe tener acceso «Solo yo».</p>
+<button class="secondary" id="saveConfig" type="button">Guardar conexión</button>
+</section>
+<form id="postForm" method="POST"><input type="hidden" name="payload" id="payload" /></form>
+</main>
+<script>
+'use strict';
+const $ = x => document.getElementById(x);
+const KEY='mi-asistente-backend-v3';
+$('endpoint').value=localStorage.getItem(KEY)||'';
+let recognition=null, listening=false, sendPending=false, finalTranscript='', sent=false;
+const verbs='revisar|confirmar|solicitar|enviar|llamar|hablar|preguntar|verificar|validar|programar|agendar|coordinar|dar seguimiento|hacer seguimiento|preparar|actualizar|consultar|pedir|recordar|dar aviso|compartir|checar|chequear|reunirme|reunirnos|entregar|notificar|gestionar|dar respuesta|comprobar|realizar|revisarme|avisar';
+function parseTasks(raw){
+  let text=raw.trim().replace(/[\r\n]+/g,'; ').replace(/[.!?]+(?=\s|$)/g,'; ').replace(/\s+/g,' ');
+  // Divide en nuevos verbos de accion, no cada vez que se use "y".
+  const dateStart='(?:el |este |proximo )?(?:lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)|(?:hoy|mañana|pasado mañana)';
+  const nextAction='(?:(?:'+verbs+')\\b|(?:'+dateStart+')\\s+(?:'+verbs+')\\b)';
+  const marker = new RegExp('(?:;|,\\s*(?='+nextAction+')|\\s+y\\s+(?='+nextAction+')|\\s+(?:también|además|después|luego|otra cosa|siguiente pendiente)[:,]?\\s*(?='+nextAction+'))','gi');
+  text=text.replace(marker,' || ');
+  const chunks=text.split(/\s*\|\|\s*/).map(x=>x.trim()).filter(Boolean);
+  const today=new Date();today.setHours(12,0,0,0);
+  const dayNames={domingo:0,lunes:1,martes:2,miercoles:3,jueves:4,viernes:5,sabado:6};
+  const normalize=x=>x.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  const dateStr=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
+  return chunks.map(chunk=>{
+    let title=chunk,date=''; const norm=normalize(chunk);
+    let offset=null,found='';
+    const rel=[[/\bpasado manana\b/,2],[/\bmanana\b/,1],[/\bhoy\b/,0]];
+    for(const [re,n] of rel){let m=re.exec(norm);if(m){offset=n;found=m[0];break;}}
+    if(offset===null){
+      for(const day of Object.keys(dayNames)){
+        const m=new RegExp('\\b(?:el |este |proximo )?'+day+'\\b').exec(norm);
+        if(m){offset=(dayNames[day]-today.getDay()+7)%7; if(offset===0)offset=7;found=m[0];break;}
+      }
+    }
+    if(offset!==null){let d=new Date(today);d.setDate(d.getDate()+offset);date=dateStr(d);
+      // Retirar la expresion de tiempo sin afectar palabras acentuadas.
+      const normalizedChars=normalize(chunk);const idx=normalizedChars.indexOf(found);if(idx>=0){title=(chunk.slice(0,idx)+' '+chunk.slice(idx+found.length)).replace(/\s+/g,' ').trim();}
+    }
+    title=title.replace(/^(?:y|también|además|después|luego|otra cosa|siguiente pendiente)[, :]+/i,'').replace(/^[,;\s]+|[,;\s]+$/g,'').trim();
+    if(!title || title.length<3)return null;
+    return {title:title[0].toUpperCase()+title.slice(1),date};
+  }).filter(Boolean).slice(0,20);
+}
+function showStatus(t){$('status').textContent=t;}
+function preview(tasks){$('previewArea').classList.remove('hidden');$('preview').replaceChildren();for(const x of tasks){const li=document.createElement('li');li.textContent=x.title+(x.date?' · '+x.date:' · sin fecha');$('preview').append(li);}}
+function send(text){
+  if(sent)return;
+  const endpoint=($('endpoint').value||'').trim();
+  if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec(?:\?.*)?$/.test(endpoint)){
+    $('configPanel').classList.remove('hidden');showStatus('Falta configurar la URL de Apps Script.');return;
+  }
+  const tasks=parseTasks(text);
+  if(!tasks.length){showStatus('No se detectaron tareas. Intenta otra vez.');return;}
+  preview(tasks);
+  if(tasks.length===1 && /\b(?:y|tambien|ademas)\b/i.test(text)){
+    showStatus('Solo detecté una tarea. Revisa el texto y usa «Procesar texto escrito».');return;
+  }
+  sent=true;showStatus('Enviando '+tasks.length+' tarea(s) a Google Tasks…');
+  const batchId= (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())+'-'+Math.random().toString(36).slice(2));
+  $('payload').value=JSON.stringify({batchId,tasks});
+  $('postForm').action=endpoint;
+  $('postForm').submit(); // Navegación de primer nivel, sin CORS ni credenciales en la página pública.
+}
+function finish(){listening=false;$('mic').classList.remove('recording');if(sendPending){sendPending=false;const text=finalTranscript.trim()||$('transcript').value.trim();if(text)send(text);else showStatus('No se escuchó ningún pendiente.');}else if(!sent)showStatus('Toca el micrófono para empezar');}
+function begin(){
+  sent=false;finalTranscript='';$('transcript').value='';$('previewArea').classList.add('hidden');
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){showStatus('Este Chrome no ofrece reconocimiento. Usa el micrófono de Gboard.');return;}
+  recognition=new SR();recognition.lang='es-MX';recognition.continuous=true;recognition.interimResults=true;
+  recognition.onstart=()=>{listening=true;sendPending=true;$('mic').classList.add('recording');showStatus('Escuchando... toca de nuevo para terminar.');};
+  recognition.onresult=e=>{let interim='';for(let i=e.resultIndex;i<e.results.length;i++){const item=e.results[i];if(item.isFinal)finalTranscript+=item[0].transcript+' ';else interim+=item[0].transcript;}$('transcript').value=(finalTranscript+interim).trim();};
+  recognition.onerror=e=>{sendPending=false;showStatus('Dictado bloqueado: '+e.error+'. Prueba permisos de Chrome o Gboard.');};
+  recognition.onend=finish;
+  try{recognition.start();}catch(e){sendPending=false;showStatus('No se pudo iniciar el dictado: '+e.message);}
+}
+$('mic').addEventListener('click',()=>{if(listening){showStatus('Procesando dictado…');try{recognition.stop();}catch(e){finish();}}else begin();});
+$('manual').addEventListener('click',()=>{sent=false;send($('transcript').value.trim());});
+$('settings').addEventListener('click',()=>$('configPanel').classList.toggle('hidden'));
+$('saveConfig').addEventListener('click',()=>{localStorage.setItem(KEY,$('endpoint').value.trim());$('configPanel').classList.add('hidden');showStatus('Conexión guardada. Ahora puedes dictar.');});
+if(!$('endpoint').value)$('configPanel').classList.remove('hidden');
+</script>
+</body></html>
