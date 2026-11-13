@@ -9,7 +9,7 @@
 </head>
 <body>
 <main>
-<header><small>ASISTENTE PERSONAL · VERSIÓN 3.2</small><h1>Mis pendientes 🎙️</h1><p>Habla normalmente. La aplicación separará tus tareas y las enviará al terminar.</p></header>
+<header><small>ASISTENTE PERSONAL · VERSIÓN 3.3</small><h1>Mis pendientes 🎙️</h1><p>Habla normalmente. La aplicación separará tus tareas y las enviará al terminar.</p></header>
 <section class="panel">
 <button id="mic" aria-label="Empezar o terminar dictado">🎙</button>
 <div id="status">Toca el micrófono para empezar</div>
@@ -68,36 +68,59 @@ function connectionStatus() {
 $('endpoint').addEventListener('input',connectionStatus);
 connectionStatus();
 let recognition=null, listening=false, sendPending=false, finalTranscript='', sent=false;
-const verbs='revisar|confirmar|solicitar|enviar|llamar|hablar|preguntar|verificar|validar|programar|agendar|coordinar|dar seguimiento|hacer seguimiento|preparar|actualizar|consultar|pedir|recordar|dar aviso|compartir|checar|chequear|reunirme|reunirnos|entregar|notificar|gestionar|dar respuesta|comprobar|realizar|revisarme|avisar';
+const verbs='dar seguimiento|hacer seguimiento|dar aviso|dar respuesta|revisar|confirmar|solicitar|enviar|llamar|hablar|preguntar|verificar|validar|programar|agendar|coordinar|preparar|actualizar|consultar|pedir|recordar|compartir|checar|chequear|reunirme|reunirnos|entregar|notificar|gestionar|comprobar|realizar|avisar|mandar|revisarme|darle seguimiento|comunicar|cotizar|conseguir|reunir|investigar|hacer|terminar|checar';
+const accentless=x=>x.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+const dateStart='(?:(?:para\\s+)?(?:el|este|proximo)\\s+)?(?:lunes|martes|miercoles|jueves|viernes|sabado|domingo)|(?:para\\s+)?(?:hoy|manana|pasado\\s+manana)';
+const taskStart='(?:(?:tengo\\s+que|hay\\s+que|necesito|debo|no\\s+se\\s+me\\s+puede\\s+olvidar|no\\s+olvidar|acuerdame\\s+de|recuerdame\\s+de)\\s+)?(?:'+verbs+')\\b';
 function parseTasks(raw){
-  let text=raw.trim().replace(/[\r\n]+/g,'; ').replace(/[.!?]+(?=\s|$)/g,'; ').replace(/\s+/g,' ');
-  // Divide en nuevos verbos de accion, no cada vez que se use "y".
-  const dateStart='(?:el |este |proximo )?(?:lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo)|(?:hoy|mañana|pasado mañana)';
-  const nextAction='(?:(?:'+verbs+')\\b|(?:'+dateStart+')\\s+(?:'+verbs+')\\b)';
-  const marker = new RegExp('(?:;|,\\s*(?='+nextAction+')|\\s+y\\s+(?='+nextAction+')|\\s+(?:también|además|después|luego|otra cosa|siguiente pendiente)[:,]?\\s*(?='+nextAction+'))','gi');
-  text=text.replace(marker,' || ');
-  const chunks=text.split(/\s*\|\|\s*/).map(x=>x.trim()).filter(Boolean);
+  // Parseo sobre texto normalizado para detectar acentos, manteniendo las posiciones originales.
+  let text=String(raw||'').trim().replace(/[\r\n]+/g,'; ').replace(/[.!?]+(?=\s|$)/g,'; ').replace(/\s+/g,' ');
+  if(!text)return [];
+  const norm=accentless(text);
+  const marks=new Set([0]);
+  const markAt=(pos)=>{if(pos>0 && pos<text.length) marks.add(pos);};
+  // Separadores explícitos: «punto», «siguiente pendiente» y enumeraciones habladas.
+  const explicit=/(?:;|\b(?:siguiente pendiente|otra tarea|otro pendiente|nueva tarea)\b\s*[:,]?)/g;
+  for(const m of norm.matchAll(explicit))markAt(m.index+m[0].length);
+  // «..., y el lunes confirmar ...» o «y necesito confirmar ...» son nuevas tareas.
+  const actions=new RegExp('(?:'+taskStart+'|(?:'+dateStart+')\\s+'+taskStart+')','g');
+  const starters=[];let m;
+  while((m=actions.exec(norm))!==null){
+    const i=m.index;
+    // No dividir al encontrar un verbo dentro de una frase como «para revisar el TPV».
+    const left=norm.slice(Math.max(0,i-75),i);
+    const connector=/(?:[,;:]\s*|\b(?:y|tambien|ademas|luego|despues|por otro lado|por ultimo|otra cosa|ahora)\s+)$/.exec(left);
+    if(i===0 || connector){
+      starters.push(i);
+      if(i>0 && connector){const boundary=i-connector[0].length;markAt(boundary>=0?boundary:i);}
+    }
+  }
+  // Puntuación «, el martes...» puede ser un comienzo aunque contenga «para».
+  const order=[...marks].sort((x,y)=>x-y);
+  const chunks=[];
+  for(let i=0;i<order.length;i++){
+    const part=text.slice(order[i],order[i+1]??text.length).replace(/^[,;:\s]+|[,;:\s]+$/g,'').trim();
+    if(part)chunks.push(part);
+  }
   const today=new Date();today.setHours(12,0,0,0);
-  const dayNames={domingo:0,lunes:1,martes:2,miercoles:3,jueves:4,viernes:5,sabado:6};
-  const normalize=x=>x.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  const weekdays={domingo:0,lunes:1,martes:2,miercoles:3,jueves:4,viernes:5,sabado:6};
   const dateStr=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
   return chunks.map(chunk=>{
-    let title=chunk,date=''; const norm=normalize(chunk);
-    let offset=null,found='';
-    const rel=[[/\bpasado manana\b/,2],[/\bmanana\b/,1],[/\bhoy\b/,0]];
-    for(const [re,n] of rel){let m=re.exec(norm);if(m){offset=n;found=m[0];break;}}
-    if(offset===null){
-      for(const day of Object.keys(dayNames)){
-        const m=new RegExp('\\b(?:el |este |proximo )?'+day+'\\b').exec(norm);
-        if(m){offset=(dayNames[day]-today.getDay()+7)%7; if(offset===0)offset=7;found=m[0];break;}
-      }
+    let title=chunk,date='';const normal=accentless(chunk);
+    let match=null,days=null;
+    const relative=[[/\bpasado\s+manana\b/,2],[/\bmanana\b/,1],[/\bhoy\b/,0]];
+    for(const [re,offset] of relative){const found=re.exec(normal);if(found){match=found;days=offset;break;}}
+    if(!match){
+      const d=/\b(?:(?:para\s+)?(?:el|este|proximo)\s+)?(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/.exec(normal);
+      if(d){match=d;days=(weekdays[d[1]]-today.getDay()+7)%7;if(days===0)days=7;}
     }
-    if(offset!==null){let d=new Date(today);d.setDate(d.getDate()+offset);date=dateStr(d);
-      // Retirar la expresion de tiempo sin afectar palabras acentuadas.
-      const normalizedChars=normalize(chunk);const idx=normalizedChars.indexOf(found);if(idx>=0){title=(chunk.slice(0,idx)+' '+chunk.slice(idx+found.length)).replace(/\s+/g,' ').trim();}
+    if(match){let dt=new Date(today);dt.setDate(dt.getDate()+days);date=dateStr(dt);
+      title=(chunk.slice(0,match.index)+' '+chunk.slice(match.index+match[0].length)).replace(/\s+/g,' ').trim();
     }
-    title=title.replace(/^(?:y|también|además|después|luego|otra cosa|siguiente pendiente)[, :]+/i,'').replace(/^[,;\s]+|[,;\s]+$/g,'').trim();
-    if(!title || title.length<3)return null;
+    title=title.replace(/^(?:(?:y|también|además|después|luego|por otro lado|por último|otra cosa|siguiente pendiente|otra tarea|otro pendiente|nueva tarea)\s*[,;:]?\s*)+/i,'');
+    title=title.replace(/^(?:tengo que|hay que|necesito|debo|no se me puede olvidar|no olvidar|acuérdame de|recuérdame de)\s+/i,'');
+    title=title.replace(/^[,;:\s]+|[,;:\s]+$/g,'').trim();
+    if(title.length<3)return null;
     return {title:title[0].toUpperCase()+title.slice(1),date};
   }).filter(Boolean).slice(0,20);
 }
@@ -116,7 +139,7 @@ function send(text){
   const tasks=parseTasks(text);
   if(!tasks.length){showStatus('No se detectaron tareas. Intenta otra vez.');return;}
   preview(tasks);
-  if(tasks.length===1 && /\b(?:y|tambien|ademas)\b/i.test(text)){
+  if(tasks.length===1 && /\b(?:y\s+(?:el\s+)?(?:revisar|confirmar|solicitar|llamar|enviar|pedir|dar seguimiento)|también\s+(?:revisar|confirmar|solicitar)|además\s+(?:revisar|confirmar|solicitar))\b/i.test(accentless(text))){
     showStatus('Solo detecté una tarea. Revisa el texto y usa «Procesar texto escrito».');return;
   }
   sent=true;showStatus('Enviando '+tasks.length+' tarea(s) a Google Tasks…');
@@ -154,12 +177,9 @@ $('saveConfig').addEventListener('click',()=>{
   try {localStorage.setItem(KEY,activeEndpoint);persisted=localStorage.getItem(KEY)===activeEndpoint;}catch(e){}
   const check=normalizeEndpoint(activeEndpoint);
   if(!check.ok){showStatus('No se pudo activar la URL. Vuelve a copiarla.');return;}
-  showStatus(persisted?'Conexión activa (versión 3.2). Ya puedes dictar.':'Conexión activa en esta pestaña (versión 3.2).');
+  showStatus(persisted?'Conexión activa (versión 3.3). Ya puedes dictar.':'Conexión activa en esta pestaña (versión 3.3).');
   $('configPanel').classList.add('hidden');
 });
 if (!normalizeEndpoint(activeEndpoint).ok) $('configPanel').classList.remove('hidden');
-</script>
-</body></html>
-
 </script>
 </body></html>
