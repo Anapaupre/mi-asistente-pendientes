@@ -9,7 +9,7 @@
 </head>
 <body>
 <main>
-<header><small>ASISTENTE PERSONAL · VERSIÓN 3.3</small><h1>Mis pendientes 🎙️</h1><p>Habla normalmente. La aplicación separará tus tareas y las enviará al terminar.</p></header>
+<header><small>ASISTENTE PERSONAL · VERSIÓN 3.4</small><h1>Mis pendientes 🎙️</h1><p>Habla normalmente. La aplicación separará tus tareas y las enviará al terminar.</p></header>
 <section class="panel">
 <button id="mic" aria-label="Empezar o terminar dictado">🎙</button>
 <div id="status">Toca el micrófono para empezar</div>
@@ -77,31 +77,19 @@ function parseTasks(raw){
   let text=String(raw||'').trim().replace(/[\r\n]+/g,'; ').replace(/[.!?]+(?=\s|$)/g,'; ').replace(/\s+/g,' ');
   if(!text)return [];
   const norm=accentless(text);
-  const marks=new Set([0]);
-  const markAt=(pos)=>{if(pos>0 && pos<text.length) marks.add(pos);};
-  // Separadores explícitos: «punto», «siguiente pendiente» y enumeraciones habladas.
-  const explicit=/(?:;|\b(?:siguiente pendiente|otra tarea|otro pendiente|nueva tarea)\b\s*[:,]?)/g;
-  for(const m of norm.matchAll(explicit))markAt(m.index+m[0].length);
-  // «..., y el lunes confirmar ...» o «y necesito confirmar ...» son nuevas tareas.
-  const actions=new RegExp('(?:'+taskStart+'|(?:'+dateStart+')\\s+'+taskStart+')','g');
-  const starters=[];let m;
-  while((m=actions.exec(norm))!==null){
-    const i=m.index;
-    // No dividir al encontrar un verbo dentro de una frase como «para revisar el TPV».
-    const left=norm.slice(Math.max(0,i-75),i);
-    const connector=/(?:[,;:]\s*|\b(?:y|tambien|ademas|luego|despues|por otro lado|por ultimo|otra cosa|ahora)\s+)$/.exec(left);
-    if(i===0 || connector){
-      starters.push(i);
-      if(i>0 && connector){const boundary=i-connector[0].length;markAt(boundary>=0?boundary:i);}
-    }
-  }
-  // Puntuación «, el martes...» puede ser un comienzo aunque contenga «para».
-  const order=[...marks].sort((x,y)=>x-y);
+  // Delimitadores fuertes o conectores que introducen una NUEVA acción.
+  // No separar solo por un espacio: «mañana revisar» es una misma tarea.
+  const startsWithTask = '(?:'+dateStart+'\\s+'+taskStart+'|'+taskStart+')';
+  const boundary = new RegExp('(?:[,;:]\\s*|\\s+(?:(?:y|tambien|ademas|luego|despues|por otro lado|por ultimo)\\s+))(?='+startsWithTask+')','g');
   const chunks=[];
-  for(let i=0;i<order.length;i++){
-    const part=text.slice(order[i],order[i+1]??text.length).replace(/^[,;:\s]+|[,;:\s]+$/g,'').trim();
-    if(part)chunks.push(part);
+  let last=0;
+  for(const m of norm.matchAll(boundary)){
+    const previous=text.slice(last,m.index).trim().replace(/^[,;:\s]+|[,;:\s]+$/g,'');
+    if(previous)chunks.push(previous);
+    last=m.index+m[0].length;
   }
+  const tail=text.slice(last).trim().replace(/^[,;:\s]+|[,;:\s]+$/g,'');
+  if(tail)chunks.push(tail);
   const today=new Date();today.setHours(12,0,0,0);
   const weekdays={domingo:0,lunes:1,martes:2,miercoles:3,jueves:4,viernes:5,sabado:6};
   const dateStr=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
@@ -177,9 +165,10 @@ $('saveConfig').addEventListener('click',()=>{
   try {localStorage.setItem(KEY,activeEndpoint);persisted=localStorage.getItem(KEY)===activeEndpoint;}catch(e){}
   const check=normalizeEndpoint(activeEndpoint);
   if(!check.ok){showStatus('No se pudo activar la URL. Vuelve a copiarla.');return;}
-  showStatus(persisted?'Conexión activa (versión 3.3). Ya puedes dictar.':'Conexión activa en esta pestaña (versión 3.3).');
+  showStatus(persisted?'Conexión activa (versión 3.4). Ya puedes dictar.':'Conexión activa en esta pestaña (versión 3.4).');
   $('configPanel').classList.add('hidden');
 });
 if (!normalizeEndpoint(activeEndpoint).ok) $('configPanel').classList.remove('hidden');
 </script>
 </body></html>
+
