@@ -24,7 +24,7 @@
 <h2 style="font-size:19px">Conexión</h2>
 <label for="endpoint">URL de implementación de Apps Script (/exec)</label>
 <input id="endpoint" type="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off"/>
-<p class="hint">Se guarda solo en este navegador. La URL no es una contraseña. Apps Script debe tener acceso «Solo yo».</p>
+<p class="hint">Pega la URL completa que termina en /exec. Acepta enlaces de cuentas empresariales. Se guarda únicamente en este navegador; mantén Apps Script con acceso «Solo yo».</p><p id="connectionInfo" class="hint" role="status"></p>
 <button class="secondary" id="saveConfig" type="button">Guardar conexión</button>
 </section>
 <form id="postForm" method="POST"><input type="hidden" name="payload" id="payload" /></form>
@@ -33,7 +33,31 @@
 'use strict';
 const $ = x => document.getElementById(x);
 const KEY='mi-asistente-backend-v3';
-$('endpoint').value=localStorage.getItem(KEY)||'';
+let savedEndpoint = '';
+try { savedEndpoint = localStorage.getItem(KEY) || ''; } catch (error) { /* Almacenamiento no disponible */ }
+$('endpoint').value = savedEndpoint;
+function normalizeEndpoint(input) {
+  let value = String(input || '').trim().replace(/^[\s\"'`]+|[\s\"'`]+$/g,'');
+  if (!value) return {ok:false, reason:'empty'};
+  let url;
+  try { url = new URL(value); } catch (error) { return {ok:false,reason:'format'}; }
+  const personal = /^\/macros\/s\/[^/]+\/exec\/?$/;
+  const workspace = /^\/a\/macros\/[^/]+\/s\/[^/]+\/exec\/?$/;
+  if (url.protocol !== 'https:' || url.hostname !== 'script.google.com' ||
+      url.username || url.password || !(personal.test(url.pathname) || workspace.test(url.pathname))) {
+    return {ok:false,reason:'format'};
+  }
+  return {ok:true, value:url.origin + url.pathname.replace(/\/$/,'')};
+}
+function connectionStatus() {
+  const result = normalizeEndpoint($('endpoint').value);
+  const p = $('connectionInfo');
+  p.textContent = result.ok ? 'URL válida y lista para usar. Aún no se ha probado el envío.' :
+    result.reason === 'empty' ? 'Falta pegar la URL /exec.' : 'La URL no tiene el formato esperado. Copia la URL de Aplicación web, no la del editor.';
+  return result;
+}
+$('endpoint').addEventListener('input',connectionStatus);
+connectionStatus();
 let recognition=null, listening=false, sendPending=false, finalTranscript='', sent=false;
 const verbs='revisar|confirmar|solicitar|enviar|llamar|hablar|preguntar|verificar|validar|programar|agendar|coordinar|dar seguimiento|hacer seguimiento|preparar|actualizar|consultar|pedir|recordar|dar aviso|compartir|checar|chequear|reunirme|reunirnos|entregar|notificar|gestionar|dar respuesta|comprobar|realizar|revisarme|avisar';
 function parseTasks(raw){
@@ -72,10 +96,14 @@ function showStatus(t){$('status').textContent=t;}
 function preview(tasks){$('previewArea').classList.remove('hidden');$('preview').replaceChildren();for(const x of tasks){const li=document.createElement('li');li.textContent=x.title+(x.date?' · '+x.date:' · sin fecha');$('preview').append(li);}}
 function send(text){
   if(sent)return;
-  const endpoint=($('endpoint').value||'').trim();
-  if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec(?:\?.*)?$/.test(endpoint)){
-    $('configPanel').classList.remove('hidden');showStatus('Falta configurar la URL de Apps Script.');return;
+  const config = connectionStatus();
+  if (!config.ok) {
+    $('configPanel').classList.remove('hidden');
+    showStatus(config.reason === 'empty' ? 'Falta configurar la URL de Apps Script.' :
+      'La URL guardada no tiene un formato válido. Revísala en Configurar.');
+    return;
   }
+  const endpoint = config.value;
   const tasks=parseTasks(text);
   if(!tasks.length){showStatus('No se detectaron tareas. Intenta otra vez.');return;}
   preview(tasks);
@@ -103,7 +131,21 @@ function begin(){
 $('mic').addEventListener('click',()=>{if(listening){showStatus('Procesando dictado…');try{recognition.stop();}catch(e){finish();}}else begin();});
 $('manual').addEventListener('click',()=>{sent=false;send($('transcript').value.trim());});
 $('settings').addEventListener('click',()=>$('configPanel').classList.toggle('hidden'));
-$('saveConfig').addEventListener('click',()=>{localStorage.setItem(KEY,$('endpoint').value.trim());$('configPanel').classList.add('hidden');showStatus('Conexión guardada. Ahora puedes dictar.');});
-if(!$('endpoint').value)$('configPanel').classList.remove('hidden');
+$('saveConfig').addEventListener('click',()=>{
+  const config = connectionStatus();
+  if (!config.ok) {
+    showStatus('No se guardó: revisa la URL de la implementación /exec.');
+    return;
+  }
+  $('endpoint').value = config.value;
+  try {
+    localStorage.setItem(KEY, config.value);
+    showStatus('URL válida y guardada. Ahora puedes dictar.');
+  } catch (error) {
+    showStatus('URL válida para esta pestaña. Chrome no permitió conservarla al cerrar.');
+  }
+  $('configPanel').classList.add('hidden');
+});
+if (!normalizeEndpoint($('endpoint').value).ok) $('configPanel').classList.remove('hidden');
 </script>
 </body></html>
